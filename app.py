@@ -1,21 +1,24 @@
 import gradio as gr
 from config import APP_TITLE
 from utils.models import panggil_nyahu_ai
+import time
 
-def main():
-    # Setup the Gradio interface
-    chat = gr.ChatInterface(
-        fn=panggil_nyahu_ai,
-        title=APP_TITLE,
-        description="A highly capable assistant powered by Gemma 4 31B.",
-        theme="soft",
-        retry_btn="Retry",
-        undo_btn="Undo",
-        clear_btn="Clear",
-    )
+# Keluarkan dari fungsi main() dan jadikan variabel global bernama 'demo'
 
-    # Launch local server
-    chat.launch()
+def predict(message, history):
+    partial_message = ""
+    for char in message:
+        time.sleep(0.05)
+        partial_message += char
+        yield partial_message
 
+
+demo = gr.ChatInterface(
+    title=APP_TITLE,
+    multimodal=True,
+    save_history=True,
+    fn=panggil_nyahu_ai,
+    description='' + APP_TITLE + ' - Chatbot AI',
+)
 if __name__ == "__main__":
-    main()
+    demo.launch() 
