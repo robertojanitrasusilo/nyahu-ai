@@ -21,6 +21,7 @@ client = OpenAI(
     }
 )
 
+
 def get_system_prompt() -> str:
     """Membaca system prompt dari file."""
     file_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system.txt')
@@ -155,3 +156,28 @@ def panggil_nyahu_ai(pesan, riwayat: list):
 
     except Exception as e:
         yield f"Terjadi kesalahan saat menghubungkan ke Nyahu AI: {str(e)}"
+
+def generate_chat_title(first_message: str) -> str:
+    """
+    Menghasilkan judul singkat (3-5 kata) dari pesan pertama user menggunakan AI.
+    """
+    if not first_message or not isinstance(first_message, str):
+        return "Obrolan Baru"
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Kamu adalah pembuat judul chat. Tugasmu hanya merangkum pesan pengguna menjadi judul singkat (3-5 kata). Jangan gunakan tanda petik, kata pengantar, atau penjelas. Langsung jawab judulnya saja."
+                },
+                {"role": "user", "content": first_message}
+            ],
+            max_tokens=20,
+            temperature=0.5
+        )
+        title = response.choices[0].message.content.strip().replace('"', '').replace("'", "")
+        return title if title else (first_message[:25] + "...")
+    except Exception:
+        return first_message[:25] + "..." if len(first_message) > 25 else first_message
