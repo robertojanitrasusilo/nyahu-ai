@@ -1,0 +1,45 @@
+/* Custom CSS untuk NiceGUI - Solid Flat Minimalist */
+
+body {
+  background-color: #0f172a !important;
+  margin: 0;
+  padding: 0;
+}
+
+/* Hilangkan scrollbar default yang tebal */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Gelembung Chat Solid Flat */
+.q-message-text--sent {
+  background-color: #2563eb !important; /* Solid Blue */
+  color: #ffffff !important;
+  border-radius: 12px 12px 2px 12px !important;
+  box-shadow: none !important;
+}
+
+.q-message-text--received {
+  background-color: #1e293b !important; /* Solid Slate Dark */
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+  border-radius: 12px 12px 12px 2px !important;
+  box-shadow: none !important;
+}
+
+/* Input Text Area Adjustments */
+textarea {
+  color: #ffffff !important;
+  resize: none !important;
+}
