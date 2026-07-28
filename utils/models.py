@@ -1,9 +1,15 @@
 import os
 import base64
 import mimetypes
+import numpy as np
 from datetime import datetime
 from openai import OpenAI
-from tavily import TavilyClient  # <--- Menggunakan Tavily API
+from tavily import TavilyClient
+
+# Import RAG Stack Lokal
+from turbovec import TurboQuantIndex
+from sentence_transformers import SentenceTransformer
+
 from config import OPENROUTER_API_KEY, TAVILY_API_KEY, MODEL_NAME, APP_TITLE
 
 try:
@@ -21,12 +27,19 @@ client = OpenAI(
     }
 )
 
-# Inisialisasi Tavily Client (Aman jika API key belum diisi, akan diblokir di fungsi pencarian)
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
+
+# init turbovec index dan sentence transformeryang dipake
+print("Memuat model embedding lokal (all-MiniLM-L6-v2)...")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Model all-MiniLM-L6-v2 memiliki dimensi 384. Kita pakai 4-bit quantization untuk hemat RAM.
+vector_index = TurboQuantIndex(dim=384, bit_width=4)
+document_chunks = [] # Tempat menyimpan teks asli sesuai urutan indeks Turbovec
 
 
 def get_system_prompt() -> str:
-    """Membaca system prompt dari file dan menyuntikkan waktu saat ini agar AI sadar waktu."""
+    """Membaca system prompt dan menyuntikkan waktu saat ini agar AI sadar waktu."""
     file_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system.txt')
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -41,12 +54,13 @@ def get_system_prompt() -> str:
 
 [INSTRUKSI MUTLAK SISTEM]: 
 Hari ini adalah tanggal {sekarang}. Kamu sudah berada di tahun {tahun_ini}. 
-Jangan pernah berkata bahwa kamu "tidak bisa meramal masa depan" jika ditanya tentang tahun {tahun_ini} dan sebelumnya. Gunakan fakta dari RAG Search yang dilampirkan pengguna secara penuh!
+Jangan pernah berkata bahwa kamu "tidak bisa meramal masa depan" jika ditanya tentang tahun {tahun_ini} dan sebelumnya. Gunakan fakta dari RAG Search (Web maupun Dokumen Lokal) yang dilampirkan pengguna secara penuh!
 """
     return base_prompt + time_awareness
 
 
 def get_safe_path(obj) -> str:
+    """Mengekstrak file path secara aman dari objek Gradio."""
     if isinstance(obj, dict):
         return obj.get("path", obj.get("name", ""))
     elif hasattr(obj, "path"):
@@ -63,48 +77,25 @@ def encode_image_to_base64(image_path: str) -> str:
     return f"data:{mime_type};base64,{encoded_string}"
 
 
-def extract_text_from_pdf(pdf_path: str) -> str:
-    if not HAS_PYPDF:
-        return "[Error: Library 'pypdf' belum diinstall.]"
-    try:
-        reader = PdfReader(pdf_path)
-        extracted_text = []
-        for index, page in enumerate(reader.pages, start=1):
-            text = page.extract_text()
-            if text:
-                extracted_text.append(f"--- Halaman {index} ---\n{text}")
-        return "\n\n".join(extracted_text) if extracted_text else "[PDF Kosong/Scan Image]"
-    except Exception as e:
-        return f"[Gagal membaca PDF: {str(e)}]"
-
-
-def cari_internet_tavily(query: str, max_results: int = 4) -> str:
+def cari_internet_tavily(query: str, max_results: int = 3) -> str:
     """Melakukan pencarian RAG tingkat lanjut menggunakan Tavily API."""
     if not query or len(query.strip()) < 3 or not tavily_client:
         return ""
-
     try:
-        # Menggunakan mode advanced agar Tavily melakukan web scraping otomatis
         response = tavily_client.search(
             query=query,
             search_depth="advanced",
             max_results=max_results,
-            include_answer=True # Meminta Tavily untuk merangkum hasil analisanya juga
+            include_answer=True
         )
-        
         formatted_results = []
-        
-        # Ekstrak jawaban langsung dari Tavily (sangat akurat)
         if response.get("answer"):
             formatted_results.append(f"[Tavily AI Insight]: {response['answer']}\n")
-
-        # Ekstrak detail artikel-artikel yang relevan
         for i, r in enumerate(response.get("results", []), 1):
             title = r.get("title", "")
-            content = r.get("content", "") # Ini teks bersih hasil scraping!
+            content = r.get("content", "")
             url = r.get("url", "")
             formatted_results.append(f"[{i}] {title}\nSumber: {url}\nKonten: {content}")
-
         return "\n\n".join(formatted_results)
     except Exception as e:
         print(f"[Warning] Gagal melakukan pencarian Tavily: {e}")
@@ -115,11 +106,11 @@ def panggil_nyahu_ai(pesan, riwayat: list):
     system_prompt = get_system_prompt()
     messages = [{"role": "system", "content": system_prompt}]
 
+    # 1. Parsing Riwayat (Aman untuk Multimodal Gradio 6)
     for item in riwayat:
         if isinstance(item, dict):
             role = item.get("role")
             content = item.get("content")
-
             if isinstance(content, (list, tuple)):
                 path_str = get_safe_path(content[0]) if content else ""
                 content = f"[User melampirkan file: {os.path.basename(path_str)}]" if path_str else "[File Terlampir]"
@@ -132,7 +123,6 @@ def panggil_nyahu_ai(pesan, riwayat: list):
 
             if role and content:
                 messages.append({"role": role, "content": str(content)})
-
         elif isinstance(item, (list, tuple)) and len(item) == 2:
             user_msg, assistant_msg = item
             if user_msg:
@@ -144,6 +134,7 @@ def panggil_nyahu_ai(pesan, riwayat: list):
     user_image_parts = []
     prompt_text = ""
 
+    # 2. Parsing Input Pesan Baru
     if isinstance(pesan, dict):
         prompt_text = pesan.get("text") or ""
         if prompt_text:
@@ -156,29 +147,54 @@ def panggil_nyahu_ai(pesan, riwayat: list):
             nama_file_saja = os.path.basename(file_path)
 
             if ext == ".pdf":
-                pdf_content = extract_text_from_pdf(file_path)
-                user_text_parts.append(
-                    f"\n\n--- ISIDOKUMEN PDF: {nama_file_saja} ---\n{pdf_content}\n--- AKHIR DOKUMEN PDF ---"
-                )
+                if HAS_PYPDF:
+                    reader = PdfReader(file_path)
+                    full_text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+                    
+                    # RAG INGESTION: Potong teks jadi chunks (per 1000 huruf)
+                    chunk_size = 1000
+                    chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size) if full_text[i:i+chunk_size].strip()]
+                    
+                    if chunks:
+                        # Encode pakai Sentence Transformers lalu masukkan ke Turbovec
+                        vectors = embedder.encode(chunks).astype(np.float32)
+                        vector_index.add(vectors)
+                        document_chunks.extend(chunks)
+                        user_text_parts.append(f"\n\n[Sistem: Dokumen '{nama_file_saja}' diproses. {len(chunks)} bagian berhasil disuntikkan ke memori Turbovec.]")
+                else:
+                    user_text_parts.append(f"\n\n[Error: Library 'pypdf' belum diinstall.]")
+                    
             elif ext in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]:
                 base64_img = encode_image_to_base64(file_path)
-                user_image_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": base64_img}
-                })
+                user_image_parts.append({"type": "image_url", "image_url": {"url": base64_img}})
     else:
         prompt_text = str(pesan)
         user_text_parts.append(prompt_text)
 
-    # ================= RAG DENGAN TAVILY ================= #
+    # 1. RAG LOKAL (TURBOVEC DOKUMEN)
+    if prompt_text and len(document_chunks) > 0:
+        query_vec = embedder.encode([prompt_text]).astype(np.float32)
+        # Cari 3 potongan teks PDF paling relevan
+        scores, indices = vector_index.search(query_vec, k=3) 
+        
+        retrieved_texts = [document_chunks[i] for i in indices[0] if i < len(document_chunks)]
+        if retrieved_texts:
+            konteks_lokal = "\n\n".join([f"[Kutipan PDF {idx+1}] {txt}" for idx, txt in enumerate(retrieved_texts)])
+            user_text_parts.append(
+                f"\n\n--- DATA REFERENSI DOKUMEN PDF LOKAL ---\n{konteks_lokal}\n---------------------------------------\n"
+            )
+
+    # 2. RAG WEB (TAVILY API) 
     if prompt_text and not user_image_parts:
-        hasil_pencarian = cari_internet_tavily(prompt_text, max_results=4)
+        hasil_pencarian = cari_internet_tavily(prompt_text, max_results=3)
         if hasil_pencarian:
             user_text_parts.append(
-                f"\n\n--- DATA REFERENSI TAVILY RAG (REAL-TIME) ---\n{hasil_pencarian}\n---------------------------------------\n"
-                f"[INSTRUKSI PENTING UNTUK AI]: Di atas adalah konteks terbaru dari internet yang sudah di-scrape. Jawablah pertanyaan user HANYA berdasarkan data RAG ini. Buatlah jawaban yang mendalam, profesional, dan sertakan sumber jika ada."
+                f"\n\n--- DATA REFERENSI WEB (TAVILY) ---\n{hasil_pencarian}\n---------------------------------------\n"
             )
-    # =====================================================
+
+    # ================= INSTRUKSI FINAL ================= #
+    if len(document_chunks) > 0 or (prompt_text and not user_image_parts and tavily_client):
+         user_text_parts.append("[INSTRUKSI AI]: Jawab berdasarkan referensi PDF Lokal atau Web di atas. Utamakan PDF jika pertanyaan berkaitan dengan dokumen!")
 
     combined_text_prompt = "\n".join(user_text_parts).strip()
     if not combined_text_prompt and user_image_parts:
@@ -196,11 +212,7 @@ def panggil_nyahu_ai(pesan, riwayat: list):
             model=MODEL_NAME,
             messages=messages,
             stream=True,
-            extra_body={
-                "reasoning": {
-                    "enabled": True
-                }
-            }
+            extra_body={"reasoning": {"enabled": True}}
         )
 
         partial_text = ""
@@ -208,10 +220,8 @@ def panggil_nyahu_ai(pesan, riwayat: list):
             if chunk.choices and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
                 content = getattr(delta, "content", "") or ""
-
                 if content:
                     partial_text += content
                     yield partial_text
-
     except Exception as e:
         yield f"Terjadi kesalahan saat menghubungkan ke Nyahu AI: {str(e)}"
