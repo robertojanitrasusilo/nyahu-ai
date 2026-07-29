@@ -1,3 +1,5 @@
 gradio
 openai
 python-dotenv
+pypdf
+tavily-python
